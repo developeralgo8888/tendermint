@@ -175,7 +175,7 @@ func (app *Application) FinalizeBlock(_ context.Context, req *types.RequestFinal
 	app.ValUpdates = make([]types.ValidatorUpdate, 0)
 
 	// Punish validators who committed equivocation.
-	for _, ev := range req.ByzantineValidators {
+	for _, ev := range req.Misbehavior {
 		if ev.Type == types.MisbehaviorType_DUPLICATE_VOTE {
 			addr := string(ev.Validator.Address)
 			if pubKey, ok := app.valAddrToPubKeyMap[addr]; ok {
@@ -196,7 +196,13 @@ func (app *Application) FinalizeBlock(_ context.Context, req *types.RequestFinal
 		respTxs[i] = app.handleTx(tx)
 	}
 
-	return &types.ResponseFinalizeBlock{TxResults: respTxs, ValidatorUpdates: app.ValUpdates}, nil
+	// Using a memdb - just return the big endian size of the db
+	appHash := make([]byte, 8)
+	binary.PutVarint(appHash, app.state.Size)
+	app.state.AppHash = appHash
+	app.state.Height++
+
+	return &types.ResponseFinalizeBlock{TxResults: respTxs, ValidatorUpdates: app.ValUpdates, AppHash: appHash}, nil
 }
 
 func (*Application) CheckTx(_ context.Context, req *types.RequestCheckTx) (*types.ResponseCheckTx, error) {
@@ -207,14 +213,9 @@ func (app *Application) Commit(_ context.Context) (*types.ResponseCommit, error)
 	app.mu.Lock()
 	defer app.mu.Unlock()
 
-	// Using a memdb - just return the big endian size of the db
-	appHash := make([]byte, 8)
-	binary.PutVarint(appHash, app.state.Size)
-	app.state.AppHash = appHash
-	app.state.Height++
 	saveState(app.state)
 
-	resp := &types.ResponseCommit{Data: appHash}
+	resp := &types.ResponseCommit{}
 	if app.RetainBlocks > 0 && app.state.Height >= app.RetainBlocks {
 		resp.RetainHeight = app.state.Height - app.RetainBlocks + 1
 	}
@@ -292,7 +293,7 @@ func (app *Application) PrepareProposal(_ context.Context, req *types.RequestPre
 
 func (*Application) ProcessProposal(_ context.Context, req *types.RequestProcessProposal) (*types.ResponseProcessProposal, error) {
 	for _, tx := range req.Txs {
-		if len(tx) == 0 {
+		if len(tx) == 0 || isPrepareTx(tx) {
 			return &types.ResponseProcessProposal{Status: types.ResponseProcessProposal_REJECT}, nil
 		}
 	}

@@ -31,8 +31,16 @@ func (pq priorityQueue) get(i int) *pqEnvelope { return pq[i] }
 func (pq priorityQueue) Len() int              { return len(pq) }
 
 func (pq priorityQueue) Less(i, j int) bool {
-	// if both elements have the same priority, prioritize based on most recent
+	// if both elements have the same priority, prioritize based
+	// on most recent and largest
 	if pq[i].priority == pq[j].priority {
+		diff := pq[i].timestamp.Sub(pq[j].timestamp)
+		if diff < 0 {
+			diff *= -1
+		}
+		if diff < 10*time.Millisecond {
+			return pq[i].size > pq[j].size
+		}
 		return pq[i].timestamp.After(pq[j].timestamp)
 	}
 
@@ -70,6 +78,7 @@ var _ queue = (*pqScheduler)(nil)
 type pqScheduler struct {
 	logger       log.Logger
 	metrics      *Metrics
+	lc           *metricsLabelCache
 	size         uint
 	sizes        map[uint]uint // cumulative priority sizes
 	pq           *priorityQueue
@@ -88,6 +97,7 @@ type pqScheduler struct {
 func newPQScheduler(
 	logger log.Logger,
 	m *Metrics,
+	lc *metricsLabelCache,
 	chDescs []*ChannelDescriptor,
 	enqueueBuf, dequeueBuf, capacity uint,
 ) *pqScheduler {
@@ -117,6 +127,7 @@ func newPQScheduler(
 	return &pqScheduler{
 		logger:       logger.With("router", "scheduler"),
 		metrics:      m,
+		lc:           lc,
 		chDescs:      chDescsCopy,
 		capacity:     capacity,
 		chPriorities: chPriorities,
@@ -251,7 +262,7 @@ func (s *pqScheduler) process(ctx context.Context) {
 				s.metrics.PeerSendBytesTotal.With(
 					"chID", chIDStr,
 					"peer_id", string(pqEnv.envelope.To),
-					"message_type", s.metrics.ValueToMetricLabel(pqEnv.envelope.Message)).Add(float64(pqEnv.size))
+					"message_type", s.lc.ValueToMetricLabel(pqEnv.envelope.Message)).Add(float64(pqEnv.size))
 				s.metrics.PeerPendingSendBytes.With(
 					"peer_id", string(pqEnv.envelope.To)).Add(float64(-pqEnv.size))
 				select {
@@ -269,12 +280,10 @@ func (s *pqScheduler) process(ctx context.Context) {
 }
 
 func (s *pqScheduler) push(pqEnv *pqEnvelope) {
-	chIDStr := strconv.Itoa(int(pqEnv.envelope.ChannelID))
-
 	// enqueue the incoming Envelope
 	heap.Push(s.pq, pqEnv)
 	s.size += pqEnv.size
-	s.metrics.PeerQueueMsgSize.With("ch_id", chIDStr).Add(float64(pqEnv.size))
+	s.metrics.PeerQueueMsgSize.With("ch_id", strconv.Itoa(int(pqEnv.envelope.ChannelID))).Add(float64(pqEnv.size))
 
 	// Update the cumulative sizes by adding the Envelope's size to every
 	// priority less than or equal to it.

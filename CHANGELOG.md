@@ -2,6 +2,88 @@
 
 Friendly reminder: We have a [bug bounty program](https://hackerone.com/cosmos).
 
+## v0.35.8
+
+July 12, 2022
+
+Special thanks to external contributors on this release: @joeabbey
+
+This release fixes an unbounded heap growth issue in the implementation of the
+priority mempool, as well as some configuration, logging, and peer dialing
+improvements in the non-legacy p2p stack. It also adds a new opt-in
+"simple-priority" value for the `p2p.queue-type` setting, that should improve
+gossip performance for non-legacy peer networks.
+
+### BREAKING CHANGES
+
+- CLI/RPC/Config
+
+   - [node] [\#8902](https://github.com/tendermint/tendermint/pull/8902) Always start blocksync and avoid misconfiguration (@tychoish)
+
+### FEATURES
+
+- [cli] [\#8675](https://github.com/tendermint/tendermint/pull/8675) Add command to force compact goleveldb databases (@cmwaters)
+
+### IMPROVEMENTS
+
+- [p2p] [\#8914](https://github.com/tendermint/tendermint/pull/8914) [\#8875](https://github.com/tendermint/tendermint/pull/8875) Improvements to peer dialing (backported). (@tychoish)
+- [p2p] [\#8820](https://github.com/tendermint/tendermint/pull/8820) add eviction metrics and cleanup dialing error handling (backport #8819) (@tychoish)
+- [logging] [\#8896](https://github.com/tendermint/tendermint/pull/8896) Do not pre-process log results (backport #8895). (@tychoish)
+- [p2p] [\#8956](https://github.com/tendermint/tendermint/pull/8956) Simpler priority queue (backport #8929). (@tychoish)
+
+### BUG FIXES
+
+- [mempool] [\#8944](https://github.com/tendermint/tendermint/pull/8944) Fix unbounded heap growth in the priority mempool. (@creachadair)
+- [p2p] [\#8869](https://github.com/tendermint/tendermint/pull/8869) Set empty timeouts to configed values. (backport #8847). (@williambanfield)
+
+
+## v0.35.7
+
+June 16, 2022
+
+### BUG FIXES
+
+- [p2p] [\#8692](https://github.com/tendermint/tendermint/pull/8692) scale the number of stored peers by the configured maximum connections (#8684)
+- [rpc] [\#8715](https://github.com/tendermint/tendermint/pull/8715) always close http bodies (backport #8712)
+- [p2p] [\#8760](https://github.com/tendermint/tendermint/pull/8760) accept should not abort on first error (backport #8759)
+
+### BREAKING CHANGES
+
+- P2P Protocol
+
+  - [p2p] [\#8737](https://github.com/tendermint/tendermint/pull/8737) Introduce "inactive" peer label to avoid re-dialing incompatible peers. (@tychoish)
+  - [p2p] [\#8737](https://github.com/tendermint/tendermint/pull/8737) Increase frequency of dialing attempts to reduce latency for peer acquisition. (@tychoish)
+  - [p2p] [\#8737](https://github.com/tendermint/tendermint/pull/8737) Improvements to peer scoring and sorting to gossip a greater variety of peers during PEX. (@tychoish)
+  - [p2p] [\#8737](https://github.com/tendermint/tendermint/pull/8737) Track incoming and outgoing peers separately to ensure more peer slots open for incoming connections. (@tychoish)
+
+## v0.35.6
+
+June 3, 2022
+
+### FEATURES
+
+- [migrate] [\#8672](https://github.com/tendermint/tendermint/pull/8672) provide function for database production (backport #8614) (@tychoish)
+
+### BUG FIXES
+
+- [consensus] [\#8651](https://github.com/tendermint/tendermint/pull/8651) restructure peer catchup sleep (@tychoish)
+- [pex] [\#8657](https://github.com/tendermint/tendermint/pull/8657) align max address thresholds (@cmwaters)
+- [cmd] [\#8668](https://github.com/tendermint/tendermint/pull/8668) don't used global config for reset commands (@cmwaters)
+- [p2p] [\#8681](https://github.com/tendermint/tendermint/pull/8681) shed peers from store from other networks (backport #8678) (@tychoish)
+
+
+## v0.35.5
+
+May 26, 2022
+
+### BUG FIXES
+
+- [p2p] [\#8371](https://github.com/tendermint/tendermint/pull/8371) fix setting in con-tracker (backport #8370) (@tychoish)
+- [blocksync] [\#8496](https://github.com/tendermint/tendermint/pull/8496) validate block against state before persisting it to disk (@cmwaters)
+- [statesync] [\#8494](https://github.com/tendermint/tendermint/pull/8494) avoid potential race (@tychoish)
+- [keymigrate] [\#8467](https://github.com/tendermint/tendermint/pull/8467) improve filtering for legacy transaction hashes (backport #8466) (@creachadair)
+- [rpc] [\#8594](https://github.com/tendermint/tendermint/pull/8594) fix encoding of block_results responses (@creachadair)
+
 ## v0.35.4
 
 April 18, 2022
@@ -2126,7 +2208,7 @@ handshake by authenticating the NetAddress.ID of the peer we're dialing.
 This release fixes yet another issue with the proposer selection algorithm.
 We hope it's the last one, but we won't be surprised if it's not.
 We plan to one day expose the selection algorithm more directly to
-the application ([\#3285](https://github.com/tendermint/tendermint/issues/3285)), and even to support randomness ([\#763](https://github.com/tendermint/tendermint/issues/763)).
+the application ([\#3285](https://github.com/tendermint/tendermint/issues/3285)), and even to support randomness ([\#763](https://github.com/tendermint/tendermint/issues/763)). <!-- markdown-link-check-disable-line -->
 For more, see issues marked
 [proposer-selection](https://github.com/tendermint/tendermint/labels/proposer-selection).
 

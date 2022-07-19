@@ -1,8 +1,8 @@
-// nolint: gosec
 package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"text/template"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -22,6 +21,7 @@ import (
 	"github.com/tendermint/tendermint/libs/log"
 	"github.com/tendermint/tendermint/privval"
 	e2e "github.com/tendermint/tendermint/test/e2e/pkg"
+	"github.com/tendermint/tendermint/test/e2e/pkg/infra"
 	"github.com/tendermint/tendermint/types"
 )
 
@@ -39,19 +39,10 @@ const (
 )
 
 // Setup sets up the testnet configuration.
-func Setup(logger log.Logger, testnet *e2e.Testnet) error {
+func Setup(ctx context.Context, logger log.Logger, testnet *e2e.Testnet, ti infra.TestnetInfra) error {
 	logger.Info(fmt.Sprintf("Generating testnet files in %q", testnet.Dir))
 
 	err := os.MkdirAll(testnet.Dir, os.ModePerm)
-	if err != nil {
-		return err
-	}
-
-	compose, err := MakeDockerCompose(testnet)
-	if err != nil {
-		return err
-	}
-	err = os.WriteFile(filepath.Join(testnet.Dir, "docker-compose.yml"), compose, 0644)
 	if err != nil {
 		return err
 	}
@@ -92,6 +83,8 @@ func Setup(logger log.Logger, testnet *e2e.Testnet) error {
 		if err != nil {
 			return err
 		}
+		// nolint: gosec
+		// G306: Expect WriteFile permissions to be 0600 or less
 		err = os.WriteFile(filepath.Join(nodeDir, "config", "app.toml"), appCfg, 0644)
 		if err != nil {
 			return err
@@ -131,65 +124,11 @@ func Setup(logger log.Logger, testnet *e2e.Testnet) error {
 		}
 	}
 
+	if err := ti.Setup(ctx); err != nil {
+		return err
+	}
+
 	return nil
-}
-
-// MakeDockerCompose generates a Docker Compose config for a testnet.
-func MakeDockerCompose(testnet *e2e.Testnet) ([]byte, error) {
-	// Must use version 2 Docker Compose format, to support IPv6.
-	tmpl, err := template.New("docker-compose").Funcs(template.FuncMap{
-		"addUint32": func(x, y uint32) uint32 {
-			return x + y
-		},
-	}).Parse(`version: '2.4'
-
-networks:
-  {{ .Name }}:
-    labels:
-      e2e: true
-    driver: bridge
-{{- if .IPv6 }}
-    enable_ipv6: true
-{{- end }}
-    ipam:
-      driver: default
-      config:
-      - subnet: {{ .IP }}
-
-services:
-{{- range .Nodes }}
-  {{ .Name }}:
-    labels:
-      e2e: true
-    container_name: {{ .Name }}
-    image: tendermint/e2e-node
-{{- if eq .ABCIProtocol "builtin" }}
-    entrypoint: /usr/bin/entrypoint-builtin
-{{- else if .LogLevel }}
-    command: start --log-level {{ .LogLevel }}
-{{- end }}
-    init: true
-    ports:
-    - 26656
-    - {{ if .ProxyPort }}{{ addUint32 .ProxyPort 1000 }}:{{ end }}26660
-    - {{ if .ProxyPort }}{{ .ProxyPort }}:{{ end }}26657
-    - 6060
-    volumes:
-    - ./{{ .Name }}:/tendermint
-    networks:
-      {{ $.Name }}:
-        ipv{{ if $.IPv6 }}6{{ else }}4{{ end}}_address: {{ .IP }}
-
-{{end}}`)
-	if err != nil {
-		return nil, err
-	}
-	var buf bytes.Buffer
-	err = tmpl.Execute(&buf, testnet)
-	if err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
 }
 
 // MakeGenesis generates a genesis document.
@@ -209,6 +148,7 @@ func MakeGenesis(testnet *e2e.Testnet) (types.GenesisDoc, error) {
 	}
 	genesis.ConsensusParams.Evidence.MaxAgeNumBlocks = e2e.EvidenceAgeHeight
 	genesis.ConsensusParams.Evidence.MaxAgeDuration = e2e.EvidenceAgeTime
+	genesis.ConsensusParams.ABCI.VoteExtensionsEnableHeight = testnet.VoteExtensionsEnableHeight
 	for validator, power := range testnet.Validators {
 		genesis.Validators = append(genesis.Validators, types.GenesisValidator{
 			Name:    validator.Name,
@@ -253,7 +193,7 @@ func MakeConfig(node *e2e.Node) (*config.Config, error) {
 		cfg.Mode = string(node.Mode)
 	}
 
-	switch node.ABCIProtocol {
+	switch node.Testnet.ABCIProtocol {
 	case e2e.ProtocolUNIX:
 		cfg.ProxyApp = AppAddressUNIX
 	case e2e.ProtocolTCP:
@@ -265,7 +205,7 @@ func MakeConfig(node *e2e.Node) (*config.Config, error) {
 		cfg.ProxyApp = ""
 		cfg.ABCI = ""
 	default:
-		return nil, fmt.Errorf("unexpected ABCI protocol setting %q", node.ABCIProtocol)
+		return nil, fmt.Errorf("unexpected ABCI protocol setting %q", node.Testnet.ABCIProtocol)
 	}
 
 	// Tendermint errors if it does not have a privval key set up, regardless of whether
@@ -318,14 +258,6 @@ func MakeConfig(node *e2e.Node) (*config.Config, error) {
 		}
 	}
 
-	cfg.P2P.Seeds = "" //nolint: staticcheck
-	for _, seed := range node.Seeds {
-		if len(cfg.P2P.Seeds) > 0 { //nolint: staticcheck
-			cfg.P2P.Seeds += "," //nolint: staticcheck
-		}
-		cfg.P2P.Seeds += seed.AddressP2P(true) //nolint: staticcheck
-	}
-
 	cfg.P2P.PersistentPeers = ""
 	for _, peer := range node.PersistentPeers {
 		if len(cfg.P2P.PersistentPeers) > 0 {
@@ -342,18 +274,24 @@ func MakeConfig(node *e2e.Node) (*config.Config, error) {
 // MakeAppConfig generates an ABCI application config for a node.
 func MakeAppConfig(node *e2e.Node) ([]byte, error) {
 	cfg := map[string]interface{}{
-		"chain_id":          node.Testnet.Name,
-		"dir":               "data/app",
-		"listen":            AppAddressUNIX,
-		"mode":              node.Mode,
-		"proxy_port":        node.ProxyPort,
-		"protocol":          "socket",
-		"persist_interval":  node.PersistInterval,
-		"snapshot_interval": node.SnapshotInterval,
-		"retain_blocks":     node.RetainBlocks,
-		"key_type":          node.PrivvalKey.Type(),
+		"chain_id":                  node.Testnet.Name,
+		"dir":                       "data/app",
+		"listen":                    AppAddressUNIX,
+		"mode":                      node.Mode,
+		"proxy_port":                node.ProxyPort,
+		"protocol":                  "socket",
+		"persist_interval":          node.PersistInterval,
+		"snapshot_interval":         node.SnapshotInterval,
+		"retain_blocks":             node.RetainBlocks,
+		"key_type":                  node.PrivvalKey.Type(),
+		"prepare_proposal_delay_ms": node.Testnet.PrepareProposalDelayMS,
+		"process_proposal_delay_ms": node.Testnet.ProcessProposalDelayMS,
+		"check_tx_delay_ms":         node.Testnet.CheckTxDelayMS,
+		"vote_extension_delay_ms":   node.Testnet.VoteExtensionDelayMS,
+		"finalize_block_delay_ms":   node.Testnet.FinalizeBlockDelayMS,
 	}
-	switch node.ABCIProtocol {
+
+	switch node.Testnet.ABCIProtocol {
 	case e2e.ProtocolUNIX:
 		cfg["listen"] = AppAddressUNIX
 	case e2e.ProtocolTCP:
@@ -365,7 +303,7 @@ func MakeAppConfig(node *e2e.Node) ([]byte, error) {
 		delete(cfg, "listen")
 		cfg["protocol"] = "builtin"
 	default:
-		return nil, fmt.Errorf("unexpected ABCI protocol setting %q", node.ABCIProtocol)
+		return nil, fmt.Errorf("unexpected ABCI protocol setting %q", node.Testnet.ABCIProtocol)
 	}
 	if node.Mode == e2e.ModeValidator {
 		switch node.PrivvalProtocol {
@@ -419,5 +357,7 @@ func UpdateConfigStateSync(node *e2e.Node, height int64, hash []byte) error {
 	}
 	bz = regexp.MustCompile(`(?m)^trust-height =.*`).ReplaceAll(bz, []byte(fmt.Sprintf(`trust-height = %v`, height)))
 	bz = regexp.MustCompile(`(?m)^trust-hash =.*`).ReplaceAll(bz, []byte(fmt.Sprintf(`trust-hash = "%X"`, hash)))
+	// nolint: gosec
+	// G306: Expect WriteFile permissions to be 0600 or less
 	return os.WriteFile(cfgPath, bz, 0644)
 }

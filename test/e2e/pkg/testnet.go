@@ -1,4 +1,3 @@
-//nolint: gosec
 package e2e
 
 import (
@@ -58,20 +57,26 @@ const (
 
 // Testnet represents a single testnet.
 type Testnet struct {
-	Name             string
-	File             string
-	Dir              string
-	IP               *net.IPNet
-	InitialHeight    int64
-	InitialState     map[string]string
-	Validators       map[*Node]int64
-	ValidatorUpdates map[int64]map[*Node]int64
-	Nodes            []*Node
-	KeyType          string
-	Evidence         int
-	LogLevel         string
-	TxSize           int
-	ABCIProtocol     string
+	Name                       string
+	File                       string
+	Dir                        string
+	IP                         *net.IPNet
+	InitialHeight              int64
+	InitialState               map[string]string
+	Validators                 map[*Node]int64
+	ValidatorUpdates           map[int64]map[*Node]int64
+	Nodes                      []*Node
+	KeyType                    string
+	Evidence                   int
+	VoteExtensionsEnableHeight int64
+	LogLevel                   string
+	TxSize                     int
+	ABCIProtocol               Protocol
+	PrepareProposalDelayMS     int
+	ProcessProposalDelayMS     int
+	CheckTxDelayMS             int
+	VoteExtensionDelayMS       int
+	FinalizeBlockDelayMS       int
 }
 
 // Node represents a Tendermint node in a testnet.
@@ -87,7 +92,6 @@ type Node struct {
 	Mempool          string
 	StateSync        string
 	Database         string
-	ABCIProtocol     Protocol
 	PrivvalProtocol  Protocol
 	PersistInterval  uint64
 	SnapshotInterval uint64
@@ -127,20 +131,25 @@ func LoadTestnet(file string) (*Testnet, error) {
 	proxyPortGen := newPortGenerator(proxyPortFirst)
 
 	testnet := &Testnet{
-		Name:             filepath.Base(dir),
-		File:             file,
-		Dir:              dir,
-		IP:               ipGen.Network(),
-		InitialHeight:    1,
-		InitialState:     manifest.InitialState,
-		Validators:       map[*Node]int64{},
-		ValidatorUpdates: map[int64]map[*Node]int64{},
-		Nodes:            []*Node{},
-		Evidence:         manifest.Evidence,
-		KeyType:          "ed25519",
-		LogLevel:         manifest.LogLevel,
-		TxSize:           manifest.TxSize,
-		ABCIProtocol:     manifest.ABCIProtocol,
+		Name:                   filepath.Base(dir),
+		File:                   file,
+		Dir:                    dir,
+		IP:                     ipGen.Network(),
+		InitialHeight:          1,
+		InitialState:           manifest.InitialState,
+		Validators:             map[*Node]int64{},
+		ValidatorUpdates:       map[int64]map[*Node]int64{},
+		Nodes:                  []*Node{},
+		Evidence:               manifest.Evidence,
+		KeyType:                "ed25519",
+		LogLevel:               manifest.LogLevel,
+		TxSize:                 manifest.TxSize,
+		ABCIProtocol:           Protocol(manifest.ABCIProtocol),
+		PrepareProposalDelayMS: int(manifest.PrepareProposalDelayMS),
+		ProcessProposalDelayMS: int(manifest.ProcessProposalDelayMS),
+		CheckTxDelayMS:         int(manifest.CheckTxDelayMS),
+		VoteExtensionDelayMS:   int(manifest.VoteExtensionDelayMS),
+		FinalizeBlockDelayMS:   int(manifest.FinalizeBlockDelayMS),
 	}
 	if len(manifest.KeyType) != 0 {
 		testnet.KeyType = manifest.KeyType
@@ -152,7 +161,7 @@ func LoadTestnet(file string) (*Testnet, error) {
 		testnet.InitialHeight = manifest.InitialHeight
 	}
 	if testnet.ABCIProtocol == "" {
-		testnet.ABCIProtocol = string(ProtocolBuiltin)
+		testnet.ABCIProtocol = ProtocolBuiltin
 	}
 
 	// Set up nodes, in alphabetical order (IPs and ports get same order).
@@ -173,7 +182,6 @@ func LoadTestnet(file string) (*Testnet, error) {
 			ProxyPort:        proxyPortGen.Next(),
 			Mode:             ModeValidator,
 			Database:         "goleveldb",
-			ABCIProtocol:     Protocol(testnet.ABCIProtocol),
 			PrivvalProtocol:  ProtocolFile,
 			StartAt:          nodeManifest.StartAt,
 			Mempool:          nodeManifest.Mempool,
@@ -190,9 +198,6 @@ func LoadTestnet(file string) (*Testnet, error) {
 		}
 		if nodeManifest.Mode != "" {
 			node.Mode = Mode(nodeManifest.Mode)
-		}
-		if node.Mode == ModeLight {
-			node.ABCIProtocol = ProtocolBuiltin
 		}
 		if nodeManifest.Database != "" {
 			node.Database = nodeManifest.Database
@@ -304,6 +309,12 @@ func (t Testnet) Validate() error {
 	default:
 		return errors.New("unsupported KeyType")
 	}
+	switch t.ABCIProtocol {
+	case ProtocolBuiltin, ProtocolUNIX, ProtocolTCP, ProtocolGRPC:
+	default:
+		return fmt.Errorf("invalid ABCI protocol setting %q", t.ABCIProtocol)
+	}
+
 	for _, node := range t.Nodes {
 		if err := node.Validate(t); err != nil {
 			return fmt.Errorf("invalid node %q: %w", node.Name, err)
@@ -344,7 +355,7 @@ func (n Node) Validate(testnet Testnet) error {
 		return fmt.Errorf("invalid mempool version %q", n.Mempool)
 	}
 	switch n.QueueType {
-	case "", "priority", "fifo":
+	case "", "priority", "fifo", "simple-priority":
 	default:
 		return fmt.Errorf("unsupported p2p queue type: %s", n.QueueType)
 	}
@@ -352,14 +363,6 @@ func (n Node) Validate(testnet Testnet) error {
 	case "goleveldb", "cleveldb", "boltdb", "rocksdb", "badgerdb":
 	default:
 		return fmt.Errorf("invalid database setting %q", n.Database)
-	}
-	switch n.ABCIProtocol {
-	case ProtocolBuiltin, ProtocolUNIX, ProtocolTCP, ProtocolGRPC:
-	default:
-		return fmt.Errorf("invalid ABCI protocol setting %q", n.ABCIProtocol)
-	}
-	if n.Mode == ModeLight && n.ABCIProtocol != ProtocolBuiltin {
-		return errors.New("light client must use builtin protocol")
 	}
 	switch n.PrivvalProtocol {
 	case ProtocolFile, ProtocolTCP, ProtocolGRPC, ProtocolUNIX:
@@ -463,7 +466,7 @@ func (n Node) AddressRPC() string {
 
 // Client returns an RPC client for a node.
 func (n Node) Client() (*rpchttp.HTTP, error) {
-	return rpchttp.New(fmt.Sprintf("http://127.0.0.1:%v", n.ProxyPort))
+	return rpchttp.New(fmt.Sprintf("http://%s", n.AddressRPC()))
 }
 
 // Stateless returns true if the node is either a seed node or a light node
@@ -477,6 +480,8 @@ type keyGenerator struct {
 }
 
 func newKeyGenerator(seed int64) *keyGenerator {
+	// nolint: gosec
+	// G404: Use of weak random number generator (math/rand instead of crypto/rand)
 	return &keyGenerator{
 		random: rand.New(rand.NewSource(seed)),
 	}
